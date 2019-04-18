@@ -1,0 +1,1 @@
+python HazeRemoval.py --image 20.jpg

@@ -26,6 +26,12 @@
 - Coloring Operations
   - False coloring
   - Full color processing
+- Retinex
+  - SSR
+  - MSR
+  - MSRCR
+  - Experiment
+- Dark Channel Prior
 - Reference
 
 
@@ -514,7 +520,7 @@ subplot(2,2,4); imshow(abs(result), []); title('带通滤波后的频谱');
 
 同态滤波的基本原理是：将像元灰度值看作是照度和反射率两个组份的产物。由于照度相对变化很小，可以看作是图像的低频成份，而反射率则是高频成份。通过分别处理照度和反射率对灰度值的影响，达到揭示阴影区细节特征的目的。[8]
 
-流程：$S(x, y) ---> Log ---> FFT--->filter--->IFFT--->Exp--->T(x, y)$[8]
+流程：$S(x, y) ---> Log ---> FFT--->filter--->IFFT--->Exp--->T(x, y)​$[8]
 
 实验结果：
 
@@ -600,6 +606,191 @@ imshow(img_recover);
 title('img_recover');
 ```
 
+## 5. Retinex
+
+视网膜-大脑皮层（Retinex）理论认为世界是无色的，人眼看到的世界是光与物质相互作用的结果，也就是说，映射到人眼中的图像和光的长波（R）、中波（G）、短波（B）以及物体的反射性质有关。基于这个理论，可以抽象下图中的公式$I(x, y)=R(x, y) \bullet L(x, y)$，$I(x, y)$代表观察到的图像，$R(x, y)$代表物体的反射属性，$L(x, y)$代表物体表面的光照。
+
+![img](assets/75922-20180328175321961-461589862.png)
+
+### 5.1 Single-Scale Retinex
+
+在Retinex理论中，一个假定是光照$I(x, y)$是缓慢变化的，也就是低频的，要从$I(x, y)$中还原出$R(x, y)$，所以可以通过低通滤波器得到光照分量。
+
+具体做法：
+
+- 对源公式两边同时取对数，得到$\log (R)=\log (I)-\log (L)​$
+- 通过高斯模糊低通滤波器对原图进行滤波，公式为$L = F * I$
+- 得到$L$后，利用第一步的公式得到$log(R)$，然后通过$exp$函数得到R
+
+### 5.2 Multi-Scale Retinex
+
+上面是单个尺度下的Retinex算法，当然也存在多尺度的Retinex算法，最为经典的就是3尺度的，大、中、小，既能实现图像动态范围的压缩，又能保持色感的一致性较好。[11]
+
+具体做法: 对每个尺度分别进行单尺度的Retinex算法，将每个尺度的结果相加取平均得到最终结果(这里是简单地取权重相同，当然还可以设立权重不等）.
+
+### 5.3 Multi-Scale Retinex with Color Restoration
+
+在前面的增强过程中，图像可能会因为增加了噪声，而使得图像的局部细节色彩失真，不能显现出物体的真正颜色，整体视觉效果变差。带色彩恢复因子C的多尺度算法是在多个固定尺度的基础上考虑色彩不失真恢复的结果，在多尺度Retinex算法过程中，通过引入一个色彩因子C来弥补由于图像局部区域对比度增强而导致的图像颜色失真的缺陷，通常情况下所引入的色彩恢复因子C的表达式为：
+$$
+R_{M S R C R_{i}}(x, y)=C_{i}(x, y) R_{M S R_{i}}(x, y)
+$$
+
+$$
+C_{i}(x, y)=f\left[\frac{I_{i}(x, y)}{\sum_{j=1}^{N} I_{j}(x, y)}\right]
+$$
+
+其中，$C_i$表示为第$i$个颜色通道地色彩恢复系数，它的作用是调节3个通道颜色的比例，$f(\cdot)$表示颜色空间的映射函数，通常可以采用下面的形式：
+$$
+C_{i}(x, y)=\beta \log \frac{\alpha I_{i}(x, y)}{\sum_{j=1}^{N} I_{j}(x, y)}=\beta\left\{\log \left[\alpha I_{i}\right]-\log \left[\sum_{j=1}^{N} I_{j}(x, y)\right]\right\}
+$$
+其中，$\beta$是增益常数，$\alpha$是受控制的非线性强度，带色彩恢复的多尺度Retinex算法通过色彩恢复因子C这个系数来调整原始图像中3个颜色通道之间的比例关系，从而把相对有点暗的区域的信息凸显出来，以达到消除图像色彩失真缺陷的目的。处理后的图像局域对比度得以提高，而且其亮度与真实的场景很相似，图像在人们的视觉感知下显得更为逼真。因此，MSRCR算法会具有比较好的颜色再现性、亮度恒常性与动态范围压缩等特性。[12]
+
+### 5.4 Experiment
+
+source code:
+
+```python
+#ref [11]
+import argparse
+import numpy as np
+import cv2
+
+
+def singleScaleRetinexProcess(img, sigma):
+    temp = cv2.GaussianBlur(img, (0, 0), sigma)
+    gaussian = np.where(temp == 0, 0.01, temp)
+    retinex = np.log10(img + 0.01) - np.log10(gaussian)
+    return retinex
+
+def multiScaleRetinexProcess(img, sigma_list):
+    retinex = np.zeros_like(img * 1.0)
+    for sigma in sigma_list:
+        retinex = singleScaleRetinexProcess(img, sigma)
+    retinex = retinex / len(sigma_list)
+    return retinex
+
+def colorRestoration(img, alpha, beta):
+    img_sum = np.sum(img, axis=2, keepdims=True)
+    color_restoration = beta * (np.log10(alpha * img) - np.log10(img_sum))
+    return color_restoration
+
+def multiScaleRetinexWithColorRestorationProcess(img, sigma_list, G, b, alpha, beta):
+    img = np.float64(img) + 1.0
+    img_retinex = multiScaleRetinexProcess(img, sigma_list)
+    img_color = colorRestoration(img, alpha, beta)
+    img_msrcr = G * (img_retinex * img_color + b)
+    return img_msrcr
+
+def simplestColorBalance(img, low_clip, high_clip):
+    total = img.shape[0] * img.shape[1]
+    for i in range(img.shape[2]):
+        unique, counts = np.unique(img[:, :, i], return_counts=True)
+        current = 0
+        for u, c in zip(unique, counts):
+            if float(current) / total < low_clip:
+                low_val = u
+            if float(current) / total < high_clip:
+                high_val = u
+            current += c
+        img[:, :, i] = np.maximum(np.minimum(img[:, :, i], high_val), low_val)
+    return img
+
+def touint8(img):
+    for i in range(img.shape[2]):
+        img[:, :, i] = (img[:, :, i] - np.min(img[:, :, i])) / \
+                       (np.max(img[:, :, i]) - np.min(img[:, :, i])) * 255
+    img = np.uint8(np.minimum(np.maximum(img, 0), 255))
+    return img
+
+def SSR(img, sigma=300):
+    ssr = singleScaleRetinexProcess(img, sigma)
+    ssr = touint8(ssr)
+    return ssr
+
+def MSR(img, sigma_list=[15, 80, 250]):
+    msr = multiScaleRetinexProcess(img, sigma_list)
+    msr = touint8(msr)
+    return msr
+
+def MSRCR(img, sigma_list=[15, 80, 250], G=5, b=25, alpha=125, beta=46, low_clip=0.01, high_clip=0.99):
+    msrcr = multiScaleRetinexWithColorRestorationProcess(img, sigma_list, G, b, alpha, beta)
+    msrcr = touint8(msrcr)
+    msrcr = simplestColorBalance(msrcr, low_clip, high_clip)
+    return msrcr
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--image', required=True)
+    args = vars(ap.parse_args())
+
+    image = cv2.imread(args["image"])
+
+    ssr = SSR(image)
+    msr = MSR(image)
+    msrcr = MSRCR(image)
+
+    cv2.imshow("Retinex", np.hstack([image, ssr, msr, msrcr]))
+    cv2.waitKey(0)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+实验结果：
+
+![1555581226588](assets/1555581226588.png)
+
+## 6. Dark Channel Prior
+
+暗通道先验（Dark Channel Prior）是说在绝大多数非天空的局部区域内，某一些像素至少一个颜色通道具有很低的值，这是何凯明等人基于5000多张自然图像的统计得到的定理。根据这一定理，何凯明等人提出了暗通道先验的去雾算法，
+
+以自然图像和雾气图像为例（左边是原图，右边是暗通道，窗口大小为15*15）：
+
+![1555589295084](assets/1555589295084.png)
+
+![1555589343997](assets/1555589343997.png)
+
+暗通道先验公式如下所示：
+$$
+J^{d a r k}(\mathbf{x})=\min _{c \in\{r, g, b\}}\left(\min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(J^{c}(\mathbf{y})\right)\right)
+$$
+上述公式的意义用代码表达也很简单，首先求出每个像素RGB分量中的最小值，存入一副和原始图像大小相同的灰度图中，然后再对这幅灰度图进行最小值滤波，滤波的半径由窗口大小决定。暗通道先验的理论指出：$J^{\mathrm{dark}} \rightarrow 0​$.
+
+去雾公认的模型为：
+$$
+\mathbf{I}(\mathbf{x})=\mathbf{J}(\mathbf{x}) \mathrm{t}(\mathbf{x})+\mathbf{A}(1-\mathbf{t}(\mathbf{x}))
+$$
+其中$I$为观测强度，$J$为场景亮度，$A$为全球大气光，$t$为描述非散射到达相机的光部分的介质透射率。去雾的目的是从$I$中恢复无雾的$J$.
+
+对上述公式进行变形，得到如下公式：
+$$
+\frac{I^{c}(\mathbf{x})}{A^{c}}=t(\mathbf{x}) \frac{J^{c}(\mathbf{x})}{A^{c}}+1-t(\mathbf{x})
+$$
+上标C表示R/G/B三个通道的意思，假设t在一个窗口下为常数，对上述公式两边同时取两次最小值，得到：
+$$
+\min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(\min _{c} \frac{I^{c}(\mathbf{y})}{A^{c}}\right)=\tilde{t}(\mathbf{x}) \min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(\min _{c} \frac{J^{c}(\mathbf{y})}{A^{c}}\right)+1-\tilde{t}(\mathbf{x}) 
+$$
+根据前述的暗原色先验理论有：
+$$
+J^{\operatorname{dark}}(\mathbf{x})=\min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(\min _{c} J^{c}(\mathbf{y})\right)=0
+$$
+所以前述公式可以化简为：
+$$
+\tilde{t}(\mathbf{x})=1-\min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(\min _{c} \frac{I^{c}(\mathbf{y})}{A^{c}}\right)
+$$
+在现实生活中，即使是晴天白云，空气中也存在着一些颗粒，因此，看远处的物体还是能感觉到雾的影响，另外，雾的存在让人类感到景深的存在，因此，有必要在去雾的时候保留一定程度的雾，这可以通过在上述式子中引入一个在[0,1] 之间的因子，则上式修正为：
+$$
+\tilde{t}(\mathbf{x})=1-\omega \min _{\mathbf{y} \in \Omega(\mathbf{x})}\left(\min _{c} \frac{I^{c}(\mathbf{y})}{A^{c}}\right)
+$$
+论文中给出的$\omega$等于0.95，对A，论文中给出了一个计算方法： 从暗通道图中按照亮度的大小取前0.1%的像素，在这些位置中，在原始有雾图像I中寻找对应的具有最高亮度的点的值，作为A值。这样A知道了，利用上述公式t也就知道了，在根据原始去雾公式，J也就可以计算了。公式为$\mathrm{J}=(\mathrm{I}-\mathrm{A}) / \mathrm{t}+\mathrm{A}$。
+
+当投射图t 的值很小时，会导致J的值偏大，从而使淂图像整体向白场过度，因此一般可设置一阈值T0，当t值小于T0时，令t=T0，论文中所有效果图均以T0=0.1为标准计算。
+$$
+\mathbf{J}(\mathbf{x})=\frac{\mathbf{I}(\mathbf{x})-\mathbf{A}}{\max \left(t(\mathbf{x}), t_{0}\right)}+\mathbf{A}
+$$
+
+
 ## Reference
 
 [1] <http://homepages.inf.ed.ac.uk/rbf/HIPR2/hipr_top.htm>
@@ -622,3 +813,6 @@ title('img_recover');
 
 [10] <http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.294.8423&rep=rep1&type=pdf>
 
+[11] <https://www.cnblogs.com/wangyong/p/8665434.html>
+
+[12] <https://blog.csdn.net/baimafujinji/article/details/73824787#commentBox>

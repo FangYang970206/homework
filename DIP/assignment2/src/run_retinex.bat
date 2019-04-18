@@ -1,0 +1,1 @@
+python retinex.py --image couple.png
