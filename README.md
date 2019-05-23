@@ -1,2 +1,2 @@
 # homework
-This repo stores homework in master courses. Now, the repo contains DIP homeworks.
+这个仓库用在存放硕士课程的一些课程作业，包括数字图像处理以及基于matlab的数字信号处理。
