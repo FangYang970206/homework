@@ -38,7 +38,7 @@ subplot(1, 3, 2);
 imshow(img_noise);
 title('噪声图');
 subplot(1, 3, 3);
-imshow(img_lpf);
+imshow(img_recover3);
 title('中值加均值滤波恢复图');
 
 %% DCT
